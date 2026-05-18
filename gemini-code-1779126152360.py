@@ -1,7 +1,6 @@
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 
 # Configuración de página
 st.set_page_config(page_title="Advanced AI Geosteering - Colombia VMM", layout="wide")
@@ -9,49 +8,54 @@ st.set_page_config(page_title="Advanced AI Geosteering - Colombia VMM", layout="
 st.title("🚀 Simulador Pro: Perforación Direccional e IA")
 st.markdown("### Contexto: Cuenca Valle Medio del Magdalena (Colombia)")
 
-# --- LÓGICA DE GEOLOGÍA (VMM) ---
-# Definimos formaciones: [Nombre, Profundidad Tope (TVD), Color, Hatch (Símbolo), Tipo Roca]
-# El buzamiento (dip) es de 3 grados hacia el Este
+# --- LÓGICA DE GEOLOGÍA ---
+# [Nombre, Profundidad Tope (TVD), Color, Trama, Tipo Roca]
 FORMACIONES = [
-    ["Formación Real (Lutitas/Limos)", 0, "#8B4513", "///", "Lutita"],
-    ["Formación Colorado (Areniscas)", 3500, "#F4D03F", "..", "Areniscas"],
-    ["Formación Mugrosa (Intercalaciones)", 5500, "#58D68D", "--", "Lutita/Arena"],
-    ["Target: Fm. Esmeraldas (Arena N1)", 7800, "#D35400", "oo", "Arenisca Porosa"]
+    ["Fm. Real", 0, "#8B4513", "///", "Lutita"],
+    ["Fm. Colorado", 2000, "#F4D03F", "..", "Areniscas"],
+    ["Fm. Mugrosa", 4500, "#58D68D", "--", "Lutita/Arena"],
+    ["Target: Fm. Esmeraldas", 7000, "#D35400", "oo", "Arenisca Porosa"]
 ]
-BUZAMIENTO = 3.0  # Grados de inclinación de la capa
+BUZAMIENTO = 3.0 
 
 # --- INICIALIZACIÓN ---
 if 'md' not in st.session_state:
-    st.session_state.md = [7500]           # Empezamos cerca del target
-    st.session_state.tvd = [7750]          # TVD inicial
-    st.session_state.inc = [85.0]          # Inclinación inicial (casi horizontal)
-    st.session_state.vs = [0]              # Vertical Section inicial
-    st.session_state.dls = [0]             # Dogleg inicial
-    st.session_state.logs = []
-    st.session_state.sidetrack = False
+    st.session_state.md = [6500]           # Empezamos más arriba para ver la caída
+    st.session_state.tvd = [6600]          
+    st.session_state.inc = [45.0]          # Empezamos con inclinación de construcción
+    st.session_state.vs = [0]              
+    st.session_state.dls = [0]             
+    # Generar un obstáculo aleatorio adelante
+    st.session_state.obs_x = 800           # Vertical Section donde está el obstáculo
+    st.session_state.obs_y = 7050          # Profundidad del obstáculo
+    st.session_state.finalizado = False
 
 def calcular_dls(inc1, inc2, dist):
     return abs(inc2 - inc1) * (100 / dist)
 
-# --- SIDEBAR (CONTROLES) ---
+# --- SIDEBAR ---
 st.sidebar.header("⚙️ Parámetros de Perforación")
-inc_objetivo = st.sidebar.slider("Ajustar Inclinación (Survey @100ft)", 70.0, 110.0, float(st.session_state.inc[-1]), 0.5)
+inc_objetivo = st.sidebar.slider("Ajustar Inclinación (Survey @100ft)", 0.0, 110.0, float(st.session_state.inc[-1]), 1.0)
 
-if st.sidebar.button("🛠️ Perforar Survey (100 ft)"):
-    # Cálculos de trayectoria (Método Tangencial Simple para el ejercicio)
+if st.sidebar.button("🛠️ Perforar Survey (100 ft)") and not st.session_state.finalizado:
     dist = 100
     nueva_inc = inc_objetivo
     inc_promedio = (st.session_state.inc[-1] + nueva_inc) / 2
     
-    # MD y TVD
     nuevo_md = st.session_state.md[-1] + dist
-    nuevo_tvd = st.session_state.tvd[-1] + (dist * np.cos(np.radians(90 - inc_promedio)))
-    nuevo_vs = st.session_state.vs[-1] + (dist * np.sin(np.radians(90 - inc_promedio)))
+    # En perforación, TVD baja (aumenta número) según el coseno del ángulo con la vertical
+    # Para simplificar: delta_tvd = cos(inc) * dist
+    nuevo_tvd = st.session_state.tvd[-1] + (dist * np.cos(np.radians(inc_promedio)))
+    nuevo_vs = st.session_state.vs[-1] + (dist * np.sin(np.radians(inc_promedio)))
     
-    # Calcular DLS
     dls_actual = calcular_dls(st.session_state.inc[-1], nueva_inc, dist)
     
-    # Guardar datos
+    # Check Colisión con Obstáculo
+    dist_al_obs = np.sqrt((nuevo_vs - st.session_state.obs_x)**2 + (nuevo_tvd - st.session_state.obs_y)**2)
+    if dist_al_obs < 40:
+        st.session_state.finalizado = True
+        st.error("💥 ¡COLISIÓN! Has chocado con un pozo abandonado u obstáculo geológico.")
+    
     st.session_state.md.append(nuevo_md)
     st.session_state.tvd.append(nuevo_tvd)
     st.session_state.inc.append(nueva_inc)
@@ -59,73 +63,64 @@ if st.sidebar.button("🛠️ Perforar Survey (100 ft)"):
     st.session_state.dls.append(dls_actual)
 
 if st.sidebar.button("🚨 Realizar Sidetrack"):
-    st.session_state.sidetrack = True
-    st.session_state.logs.append("Sidetrack iniciado por obstáculo/fuera de ventana.")
+    # El sidetrack "borra" el último tramo y cambia la trayectoria
+    if len(st.session_state.md) > 1:
+        st.session_state.md.pop()
+        st.session_state.tvd.pop()
+        st.session_state.vs.pop()
+        st.session_state.inc.pop()
+        st.warning("Sidetrack iniciado: Regresando al punto de desvío anterior.")
+        st.session_state.finalizado = False
 
-# --- CÁLCULOS TÉCNICOS ---
-tvd_actual = st.session_state.tvd[-1]
-inc_actual = st.session_state.inc[-1]
-# Ángulo de ataque = Inclinación del pozo respecto al buzamiento de la formación
-aoa = abs(inc_actual - (90 + BUZAMIENTO))
+if st.sidebar.button("🔄 Reiniciar Todo"):
+    for key in list(st.session_state.keys()): del st.session_state[key]
+    st.rerun()
 
 # --- ALERTAS DE IA ---
 st.subheader("🤖 Diagnóstico de IA en Tiempo Real")
 col_a, col_b, col_c = st.columns(3)
-
 with col_a:
-    dls_val = st.session_state.dls[-1]
-    if dls_val > 4:
-        st.error(f"DLS Crítico: {dls_val:.2f}°/100ft. Riesgo alto de Ojo de Llave (Keyseat) y Pega Mecánica.")
-    elif dls_val > 2.5:
-        st.warning(f"DLS Alto: {dls_val:.2f}°/100ft. Aumento de torque y arrastre.")
-    else:
-        st.success(f"DLS Seguro: {dls_val:.2f}°/100ft")
-
+    if st.session_state.dls[-1] > 4.5:
+        st.error(f"DLS Crítico: {st.session_state.dls[-1]:.2f}. Peligro de Ojo de Llave.")
+    else: st.success("DLS dentro de límites.")
 with col_b:
-    st.metric("Ángulo de Ataque", f"{aoa:.1f}°")
-    if aoa < 2: st.info("Geonavegación Paralela: Óptimo para drenaje.")
-
+    dist_obs = st.session_state.obs_x - st.session_state.vs[-1]
+    if 0 < dist_obs < 300:
+        st.warning(f"Obstáculo detectado a {dist_obs:.0f} ft adelante. ¡Evalúe Sidetrack!")
 with col_c:
-    distancia_al_techo = abs(tvd_actual - (7800 + (st.session_state.vs[-1] * np.tan(np.radians(BUZAMIENTO)))))
-    if distancia_al_techo < 5:
-        st.error("¡ALERTA!: Saliendo de la ventana de interés. Riesgo de pérdida de producción.")
+    st.metric("Inclinación Actual", f"{st.session_state.inc[-1]}°")
 
-# --- GRÁFICA DE SECCIÓN VERTICAL ---
-fig, ax = plt.subplots(figsize=(12, 6))
+# --- GRÁFICA CORREGIDA ---
+fig, ax = plt.subplots(figsize=(12, 7))
 
-# Dibujar Formaciones con Buzamiento
-dist_max = max(2000, st.session_state.vs[-1] + 500)
-x_plot = np.array([0, dist_max])
+# Rango de visualización amplio
+dist_max = 2000
+x_plot = np.linspace(0, dist_max, 100)
 
 for i in range(len(FORMACIONES)):
-    nombre, tope_inicial, color, trama, roca = FORMACIONES[i]
-    # El tope varía con el buzamiento
-    y_tope = tope_inicial + (x_plot * np.tan(np.radians(BUZAMIENTO)))
+    nombre, tope, color, trama, roca = FORMACIONES[i]
+    y_tope = tope + (x_plot * np.tan(np.radians(BUZAMIENTO)))
     y_base = 10000 if i == len(FORMACIONES)-1 else FORMACIONES[i+1][1] + (x_plot * np.tan(np.radians(BUZAMIENTO)))
-    
-    ax.fill_between(x_plot, y_tope, y_base, color=color, alpha=0.3, hatch=trama, label=f"{nombre} ({roca})")
+    ax.fill_between(x_plot, y_tope, y_base, color=color, alpha=0.4, hatch=trama, label=f"{nombre}")
 
-# Dibujar Trayectoria del Pozo
-ax.plot(st.session_state.vs, st.session_state.tvd, color='black', linewidth=3, marker='|', label="Trayectoria Pozo")
+# Dibujar Obstáculo (Pozo abandonado)
+circulo = plt.Circle((st.session_state.obs_x, st.session_state.obs_y), 30, color='red', label='Obstáculo (Colisión)')
+ax.add_patch(circulo)
 
-# Configuración Estética
-ax.set_ylim(8100, 7500) # Zoom en la zona de interés
+# Dibujar Trayectoria
+ax.plot(st.session_state.vs, st.session_state.tvd, color='black', linewidth=4, marker='o', markersize=4, label="Pozo Activo")
+
+# AJUSTE DE EJES PARA VER TODO EL PANORAMA
+ax.set_ylim(8500, 4000) # Ver desde 4000 ft hasta 8500 ft (Ajusta esto según prefieras)
 ax.set_xlim(0, dist_max)
-ax.set_xlabel("Desplazamiento Vertical / Vertical Section (ft)")
-ax.set_ylabel("Profundidad Vertical Verdadera / TVD (ft)")
-ax.set_title("Perfil Estratigráfico - Geonavegación VMM")
-ax.legend(loc='upper right', fontsize='small')
-ax.grid(True, alpha=0.3)
+ax.invert_yaxis() # Profundidad hacia abajo
+ax.set_xlabel("Desplazamiento Horizontal (Vertical Section) [ft]")
+ax.set_ylabel("Profundidad Vertical (TVD) [ft]")
+ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1))
+ax.grid(True, which='both', linestyle='--', alpha=0.5)
 
 st.pyplot(fig)
 
-# --- TABLA DE DATOS (SURVEY) ---
-st.subheader("📋 Registro de Survey (LWD)")
-data = {
-    "MD (ft)": st.session_state.md,
-    "TVD (ft)": st.session_state.tvd,
-    "Vertical Section (ft)": st.session_state.vs,
-    "Incl (°)": st.session_state.inc,
-    "DLS (°/100ft)": st.session_state.dls
-}
-st.table(data)
+# Tabla de Survey
+st.subheader("📋 Datos del Pozo")
+st.write(f"**MD:** {st.session_state.md[-1]} ft | **TVD:** {st.session_state.tvd[-1]:.2f} ft | **DLS:** {st.session_state.dls[-1]:.2f} °/100ft")
