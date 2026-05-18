@@ -1,105 +1,131 @@
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
-# Configuración inicial de la página web
-st.set_page_config(page_title="AI Geosteering Simulator", layout="wide")
+# Configuración de página
+st.set_page_config(page_title="Advanced AI Geosteering - Colombia VMM", layout="wide")
 
-st.title("🎯 Simulador Inteligente de Geonavegación (Geosteering)")
-st.markdown("### Proyecto Final - Perforación Direccional")
-st.write("Monitorea los Rayos Gamma (LWD) en tiempo real y sigue los consejos de la IA.")
+st.title("🚀 Simulador Pro: Perforación Direccional e IA")
+st.markdown("### Contexto: Cuenca Valle Medio del Magdalena (Colombia)")
 
-# --- INICIALIZACIÓN DE VARIABLES ---
+# --- LÓGICA DE GEOLOGÍA (VMM) ---
+# Definimos formaciones: [Nombre, Profundidad Tope (TVD), Color, Hatch (Símbolo), Tipo Roca]
+# El buzamiento (dip) es de 3 grados hacia el Este
+FORMACIONES = [
+    ["Formación Real (Lutitas/Limos)", 0, "#8B4513", "///", "Lutita"],
+    ["Formación Colorado (Areniscas)", 3500, "#F4D03F", "..", "Areniscas"],
+    ["Formación Mugrosa (Intercalaciones)", 5500, "#58D68D", "--", "Lutita/Arena"],
+    ["Target: Fm. Esmeraldas (Arena N1)", 7800, "#D35400", "oo", "Arenisca Porosa"]
+]
+BUZAMIENTO = 3.0  # Grados de inclinación de la capa
+
+# --- INICIALIZACIÓN ---
 if 'md' not in st.session_state:
-    st.session_state.md = [6000]          
-    st.session_state.tvd = [5015]         
-    st.session_state.gr = [45]            
-    st.session_state.angulo = 0.0         
-    st.session_state.score = 100          
-    st.session_state.logs = ["Pozo iniciado en el centro de la formación productiva."]
+    st.session_state.md = [7500]           # Empezamos cerca del target
+    st.session_state.tvd = [7750]          # TVD inicial
+    st.session_state.inc = [85.0]          # Inclinación inicial (casi horizontal)
+    st.session_state.vs = [0]              # Vertical Section inicial
+    st.session_state.dls = [0]             # Dogleg inicial
+    st.session_state.logs = []
+    st.session_state.sidetrack = False
 
-# --- GEOLOGÍA DEL YACIMIENTO ---
-def obtener_limites_yacimiento(md_actual):
-    buzamiento = np.tan(np.radians(1.5))
-    distancia = md_actual - 6000
-    techo = 5000 + (distancia * buzamiento)
-    base = techo + 30  
-    return techo, base
+def calcular_dls(inc1, inc2, dist):
+    return abs(inc2 - inc1) * (100 / dist)
 
-# --- INTERFAZ (PANEL LATERAL) ---
-st.sidebar.header("🕹️ Controles del Taladro")
-ajuste_angulo = st.sidebar.slider("Ajustar ángulo de navegación (°)", -5.0, 5.0, float(st.session_state.angulo), 0.5)
-st.session_state.angulo = ajuste_angulo
+# --- SIDEBAR (CONTROLES) ---
+st.sidebar.header("⚙️ Parámetros de Perforación")
+inc_objetivo = st.sidebar.slider("Ajustar Inclinación (Survey @100ft)", 70.0, 110.0, float(st.session_state.inc[-1]), 0.5)
 
-if st.sidebar.button("🚀 Perforar Siguiente Intervalo (+50 ft)"):
-    nuevo_md = st.session_state.md[-1] + 50
-    cambio_tvd = -50 * np.sin(np.radians(st.session_state.angulo))
-    nuevo_tvd = st.session_state.tvd[-1] + cambio_tvd
-    techo, base = obtener_limites_yacimiento(nuevo_md)
+if st.sidebar.button("🛠️ Perforar Survey (100 ft)"):
+    # Cálculos de trayectoria (Método Tangencial Simple para el ejercicio)
+    dist = 100
+    nueva_inc = inc_objetivo
+    inc_promedio = (st.session_state.inc[-1] + nueva_inc) / 2
     
-    if techo <= nuevo_tvd <= base:
-        nuevo_gr = int(np.random.normal(45, 5)) 
-        status = "✅ Dentro del yacimiento (Arena limpia)"
-    else:
-        nuevo_gr = int(np.random.normal(130, 8)) 
-        status = "🚨 ¡FUERA DEL TARGET! Perforando Lutita"
-        st.session_state.score -= 15 
-        
+    # MD y TVD
+    nuevo_md = st.session_state.md[-1] + dist
+    nuevo_tvd = st.session_state.tvd[-1] + (dist * np.cos(np.radians(90 - inc_promedio)))
+    nuevo_vs = st.session_state.vs[-1] + (dist * np.sin(np.radians(90 - inc_promedio)))
+    
+    # Calcular DLS
+    dls_actual = calcular_dls(st.session_state.inc[-1], nueva_inc, dist)
+    
+    # Guardar datos
     st.session_state.md.append(nuevo_md)
     st.session_state.tvd.append(nuevo_tvd)
-    st.session_state.gr.append(nuevo_gr)
-    st.session_state.logs.append(f"MD: {nuevo_md}ft | {status} | GR: {nuevo_gr} API")
+    st.session_state.inc.append(nueva_inc)
+    st.session_state.vs.append(nuevo_vs)
+    st.session_state.dls.append(dls_actual)
 
-if st.sidebar.button("🔄 Reiniciar Simulación"):
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-    st.rerun()
+if st.sidebar.button("🚨 Realizar Sidetrack"):
+    st.session_state.sidetrack = True
+    st.session_state.logs.append("Sidetrack iniciado por obstáculo/fuera de ventana.")
 
-# --- CÁLCULOS DE IA ---
-md_actual = st.session_state.md[-1]
+# --- CÁLCULOS TÉCNICOS ---
 tvd_actual = st.session_state.tvd[-1]
-techo_actual, base_actual = obtener_limites_yacimiento(md_actual)
-tvd_predicho = tvd_actual + (-100 * np.sin(np.radians(st.session_state.angulo)))
-techo_futuro, base_futuro = obtener_limites_yacimiento(md_actual + 100)
+inc_actual = st.session_state.inc[-1]
+# Ángulo de ataque = Inclinación del pozo respecto al buzamiento de la formación
+aoa = abs(inc_actual - (90 + BUZAMIENTO))
 
-ai_consejo = "🟢 Trayectoria estable. Continúa con el rumbo actual."
-ai_alerta = "Normal"
+# --- ALERTAS DE IA ---
+st.subheader("🤖 Diagnóstico de IA en Tiempo Real")
+col_a, col_b, col_c = st.columns(3)
 
-if tvd_predicho < techo_futuro + 5:
-    ai_consejo = "⚠️ ALERTA DE IA: Riesgo de salir por el TECHO. Sugerencia: Bajar ángulo (DROP)."
-    ai_alerta = "Advertencia"
-elif tvd_predicho > base_futuro - 5:
-    ai_consejo = "⚠️ ALERTA DE IA: Riesgo de salir por la BASE. Sugerencia: Subir ángulo (BUILD)."
-    ai_alerta = "Advertencia"
-
-# --- GRÁFICOS ---
-col1, col2 = st.columns([2, 1])
-with col1:
-    st.subheader("Perfil Estructural del Pozo")
-    md_grafico = np.linspace(6000, max(8000, md_actual + 500), 100)
-    techos_grafico = 5000 + ((md_grafico - 6000) * np.tan(np.radians(1.5)))
-    bases_grafico = techos_grafico + 30
-    
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.fill_between(md_grafico, 4950, techos_grafico, color='#b0c4de', label='Lutita Superior')
-    ax.fill_between(md_grafico, techos_grafico, bases_grafico, color='#fff8dc', label='Arena (Target)')
-    ax.fill_between(md_grafico, bases_grafico, 5100, color='#d2b48c', label='Lutita Inferior')
-    ax.plot(st.session_state.md, st.session_state.tvd, color='black', linewidth=3, marker='o', label='Pozo Real')
-    ax.set_ylim(5080, 4970)
-    ax.set_xlim(6000, max(7000, md_actual + 100))
-    ax.legend(loc='lower left')
-    st.pyplot(fig)
-
-with col2:
-    st.subheader("Datos LWD")
-    st.metric(label="MD Actual", value=f"{md_actual} ft")
-    if st.session_state.gr[-1] < 75:
-        st.success(f"GR: {st.session_state.gr[-1]} API")
+with col_a:
+    dls_val = st.session_state.dls[-1]
+    if dls_val > 4:
+        st.error(f"DLS Crítico: {dls_val:.2f}°/100ft. Riesgo alto de Ojo de Llave (Keyseat) y Pega Mecánica.")
+    elif dls_val > 2.5:
+        st.warning(f"DLS Alto: {dls_val:.2f}°/100ft. Aumento de torque y arrastre.")
     else:
-        st.error(f"GR: {st.session_state.gr[-1]} API")
-    st.metric(label="Eficiencia", value=f"{st.session_state.score} pts")
+        st.success(f"DLS Seguro: {dls_val:.2f}°/100ft")
 
-st.subheader("🤖 Copiloto de IA")
-if ai_alerta == "Normal": st.info(ai_consejo)
-elif ai_alerta == "Advertencia": st.warning(ai_consejo)
-else: st.error(ai_consejo)
+with col_b:
+    st.metric("Ángulo de Ataque", f"{aoa:.1f}°")
+    if aoa < 2: st.info("Geonavegación Paralela: Óptimo para drenaje.")
+
+with col_c:
+    distancia_al_techo = abs(tvd_actual - (7800 + (st.session_state.vs[-1] * np.tan(np.radians(BUZAMIENTO)))))
+    if distancia_al_techo < 5:
+        st.error("¡ALERTA!: Saliendo de la ventana de interés. Riesgo de pérdida de producción.")
+
+# --- GRÁFICA DE SECCIÓN VERTICAL ---
+fig, ax = plt.subplots(figsize=(12, 6))
+
+# Dibujar Formaciones con Buzamiento
+dist_max = max(2000, st.session_state.vs[-1] + 500)
+x_plot = np.array([0, dist_max])
+
+for i in range(len(FORMACIONES)):
+    nombre, tope_inicial, color, trama, roca = FORMACIONES[i]
+    # El tope varía con el buzamiento
+    y_tope = tope_inicial + (x_plot * np.tan(np.radians(BUZAMIENTO)))
+    y_base = 10000 if i == len(FORMACIONES)-1 else FORMACIONES[i+1][1] + (x_plot * np.tan(np.radians(BUZAMIENTO)))
+    
+    ax.fill_between(x_plot, y_tope, y_base, color=color, alpha=0.3, hatch=trama, label=f"{nombre} ({roca})")
+
+# Dibujar Trayectoria del Pozo
+ax.plot(st.session_state.vs, st.session_state.tvd, color='black', linewidth=3, marker='|', label="Trayectoria Pozo")
+
+# Configuración Estética
+ax.set_ylim(8100, 7500) # Zoom en la zona de interés
+ax.set_xlim(0, dist_max)
+ax.set_xlabel("Desplazamiento Vertical / Vertical Section (ft)")
+ax.set_ylabel("Profundidad Vertical Verdadera / TVD (ft)")
+ax.set_title("Perfil Estratigráfico - Geonavegación VMM")
+ax.legend(loc='upper right', fontsize='small')
+ax.grid(True, alpha=0.3)
+
+st.pyplot(fig)
+
+# --- TABLA DE DATOS (SURVEY) ---
+st.subheader("📋 Registro de Survey (LWD)")
+data = {
+    "MD (ft)": st.session_state.md,
+    "TVD (ft)": st.session_state.tvd,
+    "Vertical Section (ft)": st.session_state.vs,
+    "Incl (°)": st.session_state.inc,
+    "DLS (°/100ft)": st.session_state.dls
+}
+st.table(data)
